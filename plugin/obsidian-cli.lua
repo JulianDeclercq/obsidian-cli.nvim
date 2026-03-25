@@ -1,2 +1,0 @@
--- Loaded automatically by the runtime. Setup is called by lazy.nvim via opts.
--- This file intentionally left minimal.
