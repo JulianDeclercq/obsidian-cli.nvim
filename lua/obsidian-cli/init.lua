@@ -15,32 +15,41 @@ function M.setup(opts)
   config = vim.tbl_deep_extend('force', config, opts or {})
 end
 
-local function run(cmd)
-  local vault_flag = config.vault and ('--vault ' .. config.vault .. ' ') or ''
-  local full_cmd = config.bin .. ' ' .. vault_flag .. cmd
-  local output = vim.fn.system(full_cmd)
+-- Normalize vault_path to a forward-slash, no-trailing-slash string.
+local function norm_vault()
+  return (config.vault_path or ''):gsub('\\', '/'):gsub('/+$', '')
+end
+
+-- Run a CLI command synchronously. args is a list of extra arguments.
+-- vault=<name> is appended automatically if configured.
+local function run(args)
+  local argv = { config.bin }
+  for _, a in ipairs(args) do table.insert(argv, a) end
+  if config.vault then table.insert(argv, 'vault=' .. config.vault) end
+  local output = vim.fn.system(argv)
   if vim.v.shell_error ~= 0 then
-    vim.notify('obsidian-cli: command failed: ' .. full_cmd, vim.log.levels.ERROR)
+    vim.notify('obsidian-cli: command failed: ' .. table.concat(argv, ' '), vim.log.levels.ERROR)
     return {}
   end
   local lines = {}
   for line in output:gmatch('[^\r\n]+') do
     local trimmed = line:match('^%s*(.-)%s*$')
-    if trimmed ~= '' then
-      table.insert(lines, trimmed)
-    end
+    if trimmed ~= '' then table.insert(lines, trimmed) end
   end
   return lines
 end
 
--- Run cmd asynchronously, call cb(lines) on success or cb(nil) on error.
-local function run_async(cmd, cb)
-  local vault_flag = config.vault and ('--vault ' .. config.vault .. ' ') or ''
-  local full_cmd = config.bin .. ' ' .. vault_flag .. cmd
-  vim.system(vim.split(full_cmd, '%s+'), { text = true }, function(obj)
+-- Run a CLI command asynchronously. args is a list of extra arguments.
+-- vault=<name> is appended automatically if configured.
+-- Calls cb(lines) on success, cb(nil) on error.
+local function run_async(args, cb)
+  local argv = { config.bin }
+  for _, a in ipairs(args) do table.insert(argv, a) end
+  if config.vault then table.insert(argv, 'vault=' .. config.vault) end
+  vim.system(argv, { text = true }, function(obj)
     if obj.code ~= 0 then
       vim.schedule(function()
-        vim.notify('obsidian-cli: command failed: ' .. full_cmd, vim.log.levels.ERROR)
+        vim.notify('obsidian-cli: command failed: ' .. table.concat(argv, ' '), vim.log.levels.ERROR)
         cb(nil)
       end)
       return
@@ -57,10 +66,11 @@ end
 -- Resolve a note name to an absolute path by searching recursively in the vault.
 -- Falls back to vault_path/name.md if not found.
 local function resolve_note_path(name)
-  local vault = (config.vault_path or ''):gsub('\\', '/'):gsub('/+$', '')
+  local vault = norm_vault()
   local filename = (name:match('[^/\\]+$') or name):gsub('%.md$', '') .. '.md'
   if vault ~= '' then
-    local matches = vim.fn.globpath(vault, '**/' .. filename, false, true)
+    local escaped = filename:gsub('([%[%]{}*?])', '\\%1')
+    local matches = vim.fn.globpath(vault, '**/' .. escaped, false, true)
     if matches and #matches > 0 then
       return matches[1]
     end
@@ -81,26 +91,11 @@ local function open_in_nvim(name)
   end
 end
 
+-- Returns the note stem (filename without extension) for use as a file= CLI arg.
 local function current_note_name()
   local path = vim.api.nvim_buf_get_name(0)
   if path == '' then return nil end
-  path = path:gsub('\\', '/')
-  if config.vault_path then
-    local vp = config.vault_path:gsub('\\', '/'):gsub('/+$', '')
-    local rel = path:match('^' .. vim.pesc(vp) .. '/(.+)$')
-    if rel then path = rel end
-  end
-  path = path:gsub('%.md$', '')
-  return path
-end
-
-local function quote(val)
-  -- Escape internal double-quotes then wrap in double-quotes if value has spaces.
-  local escaped = val:gsub('"', '\\"')
-  if escaped:find('%s') then
-    return '"' .. escaped .. '"'
-  end
-  return escaped
+  return vim.fn.fnamemodify(path, ':t:r')
 end
 
 -- Build a Telescope entry table from a raw filename/path string.
@@ -148,7 +143,7 @@ end
 function M.create_note()
   vim.ui.input({ prompt = 'Note title: ' }, function(title)
     if not title or title == '' then return end
-    run('create name=' .. quote(title))
+    run({ 'create', 'name=' .. title })
     open_in_nvim(title)
   end)
 end
@@ -174,7 +169,7 @@ end
 
 -- Pick from all vault notes with Telescope, open selected in nvim
 function M.quick_switch()
-  run_async('files', function(lines)
+  run_async({ 'files' }, function(lines)
     if not lines or #lines == 0 then
       vim.notify('obsidian-cli: no files found', vim.log.levels.WARN)
       return
@@ -187,7 +182,7 @@ end
 
 -- Search notes by filename with a live Telescope finder
 function M.find_notes()
-  local vault = (config.vault_path or ''):gsub('\\', '/')
+  local vault = norm_vault()
   if vault == '' then
     vim.notify('obsidian-cli: vault_path not configured', vim.log.levels.WARN)
     return
@@ -201,7 +196,7 @@ end
 
 -- Full-text grep across notes with a live Telescope grep window
 function M.grep_notes()
-  local vault = (config.vault_path or ''):gsub('\\', '/')
+  local vault = norm_vault()
   if vault == '' then
     vim.notify('obsidian-cli: vault_path not configured', vim.log.levels.WARN)
     return
@@ -219,7 +214,7 @@ function M.open_note()
     vim.notify('obsidian-cli: no active note', vim.log.levels.WARN)
     return
   end
-  run('open file=' .. quote(name))
+  run({ 'open', 'file=' .. name })
 end
 
 -- Show backlinks to current note in Telescope, open selected in nvim
@@ -229,7 +224,7 @@ function M.backlinks()
     vim.notify('obsidian-cli: no active note', vim.log.levels.WARN)
     return
   end
-  run_async('backlinks file=' .. quote(name), function(lines)
+  run_async({ 'backlinks', 'file=' .. name }, function(lines)
     if not lines or #lines == 0 then
       vim.notify('obsidian-cli: no backlinks for "' .. name .. '"', vim.log.levels.INFO)
       return
@@ -240,29 +235,18 @@ function M.backlinks()
   end)
 end
 
--- Open today's daily note in nvim.
--- Computes path locally from config.daily_notes settings; falls back to CLI.
+-- Open today's daily note in nvim
 function M.today()
+  local vault = norm_vault()
   local dn = config.daily_notes
-  if dn and dn.date_format then
-    local vault = (config.vault_path or ''):gsub('\\', '/'):gsub('/+$', '')
-    local date_str = os.date(dn.date_format)
-    local folder = dn.folder and (vault .. '/' .. dn.folder) or vault
-    local path = folder .. '/' .. date_str .. '.md'
-    vim.cmd('edit ' .. vim.fn.fnameescape(path))
-  else
-    local lines = run('daily:path')
-    if #lines == 0 then
-      vim.notify("obsidian-cli: could not get today's note path", vim.log.levels.ERROR)
-      return
-    end
-    vim.cmd('edit ' .. vim.fn.fnameescape(lines[1]:gsub('\\', '/')))
-  end
+  local folder = dn.folder and (vault .. '/' .. dn.folder) or vault
+  local path = folder .. '/' .. os.date(dn.date_format) .. '.md'
+  vim.cmd('edit ' .. vim.fn.fnameescape(path))
 end
 
 -- Browse and edit Obsidian CSS snippets in nvim via Telescope
 function M.snippets()
-  local vault = (config.vault_path or ''):gsub('\\', '/')
+  local vault = norm_vault()
   if vault == '' then
     vim.notify('obsidian-cli: vault_path not configured', vim.log.levels.WARN)
     return
