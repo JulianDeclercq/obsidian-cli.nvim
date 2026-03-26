@@ -126,6 +126,7 @@ local function telescope_pick(results, prompt_title, on_select)
       entry_maker = function(e) return e end,
     },
     sorter = conf.generic_sorter({}),
+    previewer = conf.file_previewer({}),
     attach_mappings = function(prompt_bufnr)
       actions.select_default:replace(function()
         actions.close(prompt_bufnr)
