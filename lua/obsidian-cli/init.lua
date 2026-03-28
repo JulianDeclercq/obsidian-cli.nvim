@@ -11,8 +11,19 @@ local config = {
   },
 }
 
+-- Normalize vault_path to a forward-slash, no-trailing-slash string.
+local function norm_vault()
+  return (config.vault_path or ''):gsub('\\', '/'):gsub('/+$', '')
+end
+
 function M.setup(opts)
   config = vim.tbl_deep_extend('force', config, opts or {})
+  -- Inject vault path into the completion module so it knows where to scan
+  local vault = norm_vault()
+  if vault ~= '' then
+    local ok, comp = pcall(require, 'obsidian-cli.completion')
+    if ok then comp._vault = vault end
+  end
 end
 
 local function generate_id()
@@ -25,17 +36,22 @@ local function generate_id()
   return tostring(os.time()) .. '-' .. suffix
 end
 
+-- Returns the id that was written (or already present), nil on failure.
 local function write_frontmatter(path, title)
   local f = io.open(path, 'r')
-  if not f then return end
+  if not f then return nil end
   local content = f:read('*a')
   f:close()
 
-  if content:match('^%-%-%-') then return end
+  if content:match('^%-%-%-') then
+    -- Already has frontmatter — extract existing id and leave file untouched
+    return content:match('\nid:%s*(.-)%s*\n')
+  end
 
+  local id = generate_id()
   local fm = table.concat({
     '---',
-    'id: ' .. generate_id(),
+    'id: ' .. id,
     'aliases:',
     '  - ' .. title,
     'tags: []',
@@ -44,14 +60,10 @@ local function write_frontmatter(path, title)
   }, '\n')
 
   local out = io.open(path, 'w')
-  if not out then return end
+  if not out then return id end
   out:write(fm .. content)
   out:close()
-end
-
--- Normalize vault_path to a forward-slash, no-trailing-slash string.
-local function norm_vault()
-  return (config.vault_path or ''):gsub('\\', '/'):gsub('/+$', '')
+  return id
 end
 
 -- Run a CLI command synchronously. args is a list of extra arguments.
@@ -181,7 +193,10 @@ function M.create_note()
     run_async({ 'create', 'name=' .. title }, function(lines)
       if not lines then return end
       local path = resolve_note_path(title)
-      write_frontmatter(path, title)
+      local id = write_frontmatter(path, title)
+      -- Append to completion cache so [[ shows it immediately
+      local ok, comp = pcall(require, 'obsidian-cli.completion')
+      if ok and id then comp.add_to_cache(id, title) end
       open_in_nvim(title)
     end)
   end)
@@ -295,6 +310,17 @@ function M.snippets()
     hidden = true,
     prompt_title = 'Obsidian Snippets',
   }
+end
+
+-- Internals re-exported for completion.lua (avoids circular dependency issues)
+M._run_async        = run_async
+M._resolve_note_path = resolve_note_path
+M._write_frontmatter = write_frontmatter
+
+-- Force a full completion cache rebuild (useful if notes were edited outside nvim)
+function M.refresh_cache()
+  local ok, comp = pcall(require, 'obsidian-cli.completion')
+  if ok then comp.refresh(norm_vault()) end
 end
 
 return M
