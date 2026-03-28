@@ -15,6 +15,40 @@ function M.setup(opts)
   config = vim.tbl_deep_extend('force', config, opts or {})
 end
 
+local function generate_id()
+  local chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  local suffix = ''
+  for _ = 1, 4 do
+    local i = math.random(1, #chars)
+    suffix = suffix .. chars:sub(i, i)
+  end
+  return tostring(os.time()) .. '-' .. suffix
+end
+
+local function write_frontmatter(path, title)
+  local f = io.open(path, 'r')
+  if not f then return end
+  local content = f:read('*a')
+  f:close()
+
+  if content:match('^%-%-%-') then return end
+
+  local fm = table.concat({
+    '---',
+    'id: ' .. generate_id(),
+    'aliases:',
+    '  - ' .. title,
+    'tags: []',
+    '---',
+    '',
+  }, '\n')
+
+  local out = io.open(path, 'w')
+  if not out then return end
+  out:write(fm .. content)
+  out:close()
+end
+
 -- Normalize vault_path to a forward-slash, no-trailing-slash string.
 local function norm_vault()
   return (config.vault_path or ''):gsub('\\', '/'):gsub('/+$', '')
@@ -144,8 +178,12 @@ end
 function M.create_note()
   vim.ui.input({ prompt = 'Note title: ' }, function(title)
     if not title or title == '' then return end
-    run({ 'create', 'name=' .. title })
-    open_in_nvim(title)
+    run_async({ 'create', 'name=' .. title }, function(lines)
+      if not lines then return end
+      local path = resolve_note_path(title)
+      write_frontmatter(path, title)
+      open_in_nvim(title)
+    end)
   end)
 end
 
