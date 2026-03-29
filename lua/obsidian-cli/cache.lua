@@ -63,7 +63,8 @@ end
 -- Append a single newly-created note without rescanning the vault
 function Cache.add(id, title, path)
   if _cache then
-    _cache[#_cache + 1] = { id = id, aliases = { title }, stem = title, path = path }
+    local stem = path and vim.fn.fnamemodify(path, ':t:r') or title
+    _cache[#_cache + 1] = { id = id, aliases = { title }, stem = stem, path = path }
   end
   -- If cache isn't built yet the lazy build on next access will pick it up anyway
 end

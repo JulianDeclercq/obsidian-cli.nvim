@@ -7,7 +7,8 @@
 --     },
 --   }
 
-local Cache = require('obsidian-cli.cache')
+local Cache       = require('obsidian-cli.cache')
+local generate_id = require('obsidian-cli.util').generate_id
 
 local Source = {}
 Source.__index = Source
@@ -61,11 +62,12 @@ function Source:get_completions(ctx, resolve)
     for _, label in ipairs(candidates) do
       if label and label ~= '' and not seen[label] and label:lower():find(q, 1, true) then
         seen[label] = true
+        local target = note.id or note.stem
         items[#items + 1] = {
           label    = label,
           kind     = 12, -- Value
           textEdit = {
-            newText = note.stem .. ((label ~= note.stem) and ('|' .. label) or '') .. ']]',
+            newText = target .. ((label ~= target) and ('|' .. label) or '') .. ']]',
             range   = {
               start   = { line = row_0, character = start_char },
               ['end'] = { line = row_0, character = end_col },
@@ -76,17 +78,24 @@ function Source:get_completions(ctx, resolve)
     end
   end
 
-  -- "Create: <search>" item
+  -- "Create: <search>" item — ID generated now so textEdit already has final form.
+  -- Memoize per search string so rapid keystrokes don't burn a new ID each time.
   if search ~= '' then
+    if self._last_create_search ~= search then
+      self._last_create_search = search
+      self._last_create_id     = generate_id()
+    end
+    local new_id = self._last_create_id
     items[#items + 1] = {
       label         = 'Create: ' .. search,
       kind          = 12,
       _create_title = search,
+      _create_id    = new_id,
       textEdit      = {
-        newText = search .. ']]',
+        newText = new_id .. '|' .. search .. ']]',
         range   = {
           start   = { line = row_0, character = start_char },
-          ['end'] = { line = row_0, character = col },
+          ['end'] = { line = row_0, character = end_col },
         },
       },
     }
@@ -99,12 +108,29 @@ end
 function Source:execute(ctx, item)
   if not item._create_title then return end
   local title = item._create_title
-  local cli = require('obsidian-cli')
+  local id    = item._create_id
+  local buf   = vim.api.nvim_get_current_buf()
+  local row   = vim.api.nvim_win_get_cursor(0)[1] - 1  -- capture now, before async
+  local cli   = require('obsidian-cli')
   cli._run_async({ 'create', 'name=' .. title }, function(lines)
     if not lines then return end
-    local path = cli._resolve_note_path(title)
-    local id = cli._write_frontmatter(path, title)
-    if id then Cache.add(id, title) end
+    local path      = cli._resolve_note_path(title)
+    local actual_id = cli._write_frontmatter(path, title, id)
+    if not actual_id then return end
+    if actual_id ~= id then
+      vim.schedule(function()
+        local line    = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1]
+        local repl    = ('[[' .. actual_id .. '|' .. title .. ']]'):gsub('%%', '%%%%')
+        local patched = line:gsub(vim.pesc('[[' .. id .. '|' .. title .. ']]'), repl, 1)
+        if patched ~= line then
+          vim.api.nvim_buf_set_lines(buf, row, row + 1, false, { patched })
+        end
+      end)
+    end
+    Cache.add(actual_id, title, path)
+    vim.schedule(function()
+      vim.notify('[obsidian] created: ' .. title .. '  [' .. actual_id .. ']', vim.log.levels.DEBUG)
+    end)
   end)
 end
 

@@ -1,4 +1,5 @@
 local M = {}
+local util = require('obsidian-cli.util')
 
 local config = {
   bin = 'obsidian',
@@ -40,29 +41,33 @@ function M.setup(opts)
   end
 end
 
-local function generate_id()
-  local chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
-  local suffix = ''
-  for _ = 1, 4 do
-    local i = math.random(1, #chars)
-    suffix = suffix .. chars:sub(i, i)
-  end
-  return tostring(os.time()) .. '-' .. suffix
-end
+local generate_id = util.generate_id
 
 -- Returns the id that was written (or already present), nil on failure.
-local function write_frontmatter(path, title)
+local function write_frontmatter(path, title, id)
   local f = io.open(path, 'r')
   if not f then return nil end
   local content = f:read('*a')
   f:close()
 
   if content:match('^%-%-%-') then
-    -- Already has frontmatter — extract existing id and leave file untouched
-    return content:match('\nid:%s*(.-)%s*\n')
+    -- Already has frontmatter — extract existing id if present.
+    local existing = content:match('\nid:%s*(.-)%s*\n')
+    if existing and existing ~= '' then return existing end
+    -- No id field — inject one just before the closing ---
+    local new_id  = id or generate_id()
+    local fm_end  = content:find('\n%-%-%-', 4)  -- position of \n before closing ---
+    if fm_end then
+      local eol     = content:find('\r\n') and '\r\n' or '\n'
+      local patched = content:sub(1, fm_end) .. 'id: ' .. new_id .. eol .. content:sub(fm_end + 1)
+      local out = io.open(path, 'w')
+      if not out then return nil end
+      out:write(patched); out:close()
+    end
+    return new_id
   end
 
-  local id = generate_id()
+  id = id or generate_id()
   local fm = table.concat({
     '---',
     'id: ' .. id,
