@@ -255,8 +255,8 @@ function M.search_notes()
     for _, a in ipairs(note.aliases) do
       if a ~= note.stem then parts[#parts + 1] = a end
     end
-    local display = (note.aliases[1] and note.aliases[1] ~= note.stem)
-                    and (note.aliases[1] .. '  [' .. note.stem .. ']')
+    local display = note.aliases[1]
+                    and (note.aliases[1] .. ' [' .. note.stem .. ']')
                     or note.stem
     entries[#entries + 1] = {
       value    = note.stem,
