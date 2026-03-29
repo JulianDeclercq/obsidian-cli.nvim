@@ -7,73 +7,10 @@
 --     },
 --   }
 
+local Cache = require('obsidian-cli.cache')
+
 local Source = {}
 Source.__index = Source
-
-
--- Vault-wide cache: built lazily on first [[ trigger, appended on create_note()
--- nil = not yet built; {} = built but empty
-local cache = nil
-
--- Parse only the frontmatter block of a file (stops at closing --- or line 50)
-local function parse_frontmatter(path)
-  local f = io.open(path, 'r')
-  if not f then return nil end
-  local result = { id = nil, aliases = {} }
-  local in_fm, in_aliases, n = false, false, 0
-  for line in f:lines() do
-    n = n + 1
-    if n == 1 then
-      if line:match('^%-%-%-') then in_fm = true else break end
-    elseif in_fm then
-      if line:match('^%-%-%-') then break end
-      local id = line:match('^id:%s*(.+)')
-      if id then result.id = id:match('^%s*(.-)%s*$') end
-      if line:match('^aliases:') then
-        in_aliases = true
-      elseif in_aliases then
-        local a = line:match('^%s*-%s+(.+)')
-        if a then
-          table.insert(result.aliases, a:match('^%s*(.-)%s*$'))
-        elseif not line:match('^%s') then
-          in_aliases = false
-        end
-      end
-    end
-    if n > 50 then break end
-  end
-  f:close()
-  return result
-end
-
--- Scan every .md file in vault_path and populate the cache
-local function build_cache(vault_path)
-  local paths = vim.fn.globpath(vault_path, '**/*.md', false, true)
-  local notes = {}
-  for _, p in ipairs(paths) do
-    local info = parse_frontmatter(p)
-    local stem = vim.fn.fnamemodify(p, ':t:r')
-    notes[#notes + 1] = {
-      id      = (info and info.id) or stem,
-      aliases = (info and info.aliases) or {},
-      stem    = stem,
-    }
-  end
-  cache = notes
-end
-
--- Append a single newly-created note without rescanning the vault
-function Source.add_to_cache(id, title)
-  if cache then
-    cache[#cache + 1] = { id = id, aliases = { title }, stem = title }
-  end
-  -- If cache isn't built yet the lazy build on next [[ will pick it up anyway
-end
-
--- Force a full vault rescan (manual escape hatch for external edits)
-function Source.refresh(vault_path)
-  build_cache(vault_path)
-end
 
 -- Return the search string typed after [[ (nil if cursor isn't inside [[)
 local function extract_search(ctx)
@@ -99,14 +36,12 @@ function Source:get_completions(ctx, resolve)
     return
   end
 
-  -- Lazy cache build on first request
-  if cache == nil then
-    if not Source._vault or Source._vault == '' then
-      resolve({ is_incomplete_forward = true, is_incomplete_backward = true, items = {} })
-      return
-    end
-    build_cache(Source._vault)
+  if not Source._vault or Source._vault == '' then
+    resolve({ is_incomplete_forward = true, is_incomplete_backward = true, items = {} })
+    return
   end
+
+  local notes = Cache.get(Source._vault)
 
   -- Column positions for the textEdit range (0-indexed).
   -- We replace the search text AND any ]] already in the buffer (e.g. from autopairs).
@@ -119,7 +54,7 @@ function Source:get_completions(ctx, resolve)
   local items = {}
   local q = search:lower()
 
-  for _, note in ipairs(cache) do
+  for _, note in ipairs(notes) do
     local seen = {}
     local candidates = { note.id, note.stem }
     for _, a in ipairs(note.aliases) do candidates[#candidates + 1] = a end
@@ -169,7 +104,7 @@ function Source:execute(ctx, item)
     if not lines then return end
     local path = cli._resolve_note_path(title)
     local id = cli._write_frontmatter(path, title)
-    if id then Source.add_to_cache(id, title) end
+    if id then Cache.add(id, title) end
   end)
 end
 

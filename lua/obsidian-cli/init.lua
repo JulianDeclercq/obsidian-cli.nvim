@@ -18,11 +18,25 @@ end
 
 function M.setup(opts)
   config = vim.tbl_deep_extend('force', config, opts or {})
-  -- Inject vault path into the completion module so it knows where to scan
   local vault = norm_vault()
   if vault ~= '' then
+    -- Inject vault path into the completion module so it knows where to scan
     local ok, comp = pcall(require, 'obsidian-cli.completion')
     if ok then comp._vault = vault end
+    -- Pre-warm the cache at startup so search_notes() and [[ are instant
+    vim.schedule(function()
+      require('obsidian-cli.cache').refresh(vault)
+    end)
+    -- Keep aliases in sync: re-parse frontmatter whenever a vault .md is saved
+    vim.api.nvim_create_autocmd('BufWritePost', {
+      pattern  = '*.md',
+      callback = function(ev)
+        local path = ev.match:gsub('\\', '/')
+        if path:sub(1, #vault) == vault then
+          require('obsidian-cli.cache').update_from_file(path)
+        end
+      end,
+    })
   end
 end
 
@@ -194,9 +208,8 @@ function M.create_note()
       if not lines then return end
       local path = resolve_note_path(title)
       local id = write_frontmatter(path, title)
-      -- Append to completion cache so [[ shows it immediately
-      local ok, comp = pcall(require, 'obsidian-cli.completion')
-      if ok and id then comp.add_to_cache(id, title) end
+      -- Append to cache so [[ completion and search show it immediately
+      if id then require('obsidian-cli.cache').add(id, title, path) end
       open_in_nvim(title)
     end)
   end)
@@ -221,31 +234,52 @@ function M.follow_link()
   open_in_nvim(name)
 end
 
--- Pick from all vault notes with Telescope, open selected in nvim
-function M.quick_switch()
-  run_async({ 'files' }, function(lines)
-    if not lines or #lines == 0 then
-      vim.notify('obsidian-cli: no files found', vim.log.levels.WARN)
-      return
-    end
-    telescope_pick(lines, 'Obsidian: Quick Switch', function(name)
-      open_in_nvim(name)
-    end)
-  end)
-end
-
--- Search notes by filename with a live Telescope finder
-function M.find_notes()
+-- Search notes by title and aliases using the vault cache
+function M.search_notes()
   local vault = norm_vault()
   if vault == '' then
     vim.notify('obsidian-cli: vault_path not configured', vim.log.levels.WARN)
     return
   end
-  require('telescope.builtin').find_files {
-    cwd = vault,
-    prompt_title = 'Obsidian: Find Notes',
-    follow = true,
-  }
+  local notes = require('obsidian-cli.cache').get(vault)
+
+  local pickers      = require('telescope.pickers')
+  local finders      = require('telescope.finders')
+  local conf         = require('telescope.config').values
+  local actions      = require('telescope.actions')
+  local action_state = require('telescope.actions.state')
+
+  local entries = {}
+  for _, note in ipairs(notes) do
+    local parts = { note.stem }
+    for _, a in ipairs(note.aliases) do
+      if a ~= note.stem then parts[#parts + 1] = a end
+    end
+    local display = (note.aliases[1] and note.aliases[1] ~= note.stem)
+                    and (note.aliases[1] .. '  [' .. note.stem .. ']')
+                    or note.stem
+    entries[#entries + 1] = {
+      value    = note.stem,
+      display  = display,
+      ordinal  = table.concat(parts, ' '),
+      filename = note.path or resolve_note_path(note.stem),
+    }
+  end
+
+  pickers.new({}, {
+    prompt_title = 'Obsidian: Search Notes',
+    finder = finders.new_table { results = entries, entry_maker = function(e) return e end },
+    sorter    = conf.generic_sorter({}),
+    previewer = conf.file_previewer({}),
+    attach_mappings = function(prompt_bufnr)
+      actions.select_default:replace(function()
+        actions.close(prompt_bufnr)
+        local sel = action_state.get_selected_entry()
+        if sel then open_in_nvim(sel.value) end
+      end)
+      return true
+    end,
+  }):find()
 end
 
 -- Full-text grep across notes with a live Telescope grep window
@@ -317,10 +351,9 @@ M._run_async        = run_async
 M._resolve_note_path = resolve_note_path
 M._write_frontmatter = write_frontmatter
 
--- Force a full completion cache rebuild (useful if notes were edited outside nvim)
+-- Force a full cache rebuild (useful if notes were edited outside nvim)
 function M.refresh_cache()
-  local ok, comp = pcall(require, 'obsidian-cli.completion')
-  if ok then comp.refresh(norm_vault()) end
+  require('obsidian-cli.cache').refresh(norm_vault())
 end
 
 return M
