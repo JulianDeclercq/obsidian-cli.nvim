@@ -1,143 +1,121 @@
--- blink.cmp source for [[wikilink]] completion
--- Register in your blink config:
---   sources = {
---     default = { 'lsp', 'path', 'snippets', 'buffer', 'obsidian_cli' },
---     providers = {
---       obsidian_cli = { name = 'ObsidianCLI', module = 'obsidian-cli.completion' },
---     },
---   }
+-- Native [[ wikilink completion for markdown files (Neovim 0.12+)
+local M = {}
 
-local Cache       = require('obsidian-cli.cache')
 local generate_id = require('obsidian-cli.util').generate_id
 
-local Source = {}
-Source.__index = Source
+-- Memoize the "New note" ID so rapid keystrokes don't burn a new one each time
+local last_create_search = nil
+local last_create_id = nil
 
--- Return the search string typed after [[ (nil if cursor isn't inside [[)
-local function extract_search(ctx)
-  local before = ctx.cursor_before_line
-    or (ctx.line and ctx.line:sub(1, ctx.cursor[2]))
-    or ''
-  return before:match('%[%[([^%]]*)$')
-end
+function M.setup(vault_path)
+  vim.api.nvim_create_autocmd('TextChangedI', {
+    group = vim.api.nvim_create_augroup('obsidian-wikilink-complete', { clear = true }),
+    pattern = '*.md',
+    callback = function()
+      local line = vim.api.nvim_get_current_line()
+      local col = vim.fn.col '.'
+      local before = line:sub(1, col - 1)
+      local search = before:match '%[%[([^%]]*)$'
+      if not search then return end
+      local after = line:sub(col)
+      local suffix = after:match '^%]%]' and '' or ']]'
 
--- blink.cmp calls new() to instantiate the source
-function Source.new()
-  return setmetatable({}, Source)
-end
+      local Cache = require 'obsidian-cli.cache'
+      local notes = Cache.get(vault_path)
+      local q = search:lower()
+      local items = {}
 
-function Source:get_trigger_characters()
-  return { '[' }
-end
-
-function Source:get_completions(ctx, resolve)
-  local search = extract_search(ctx)
-  if search == nil then
-    resolve({ is_incomplete_forward = true, is_incomplete_backward = true, items = {} })
-    return
-  end
-
-  if not Source._vault or Source._vault == '' then
-    resolve({ is_incomplete_forward = true, is_incomplete_backward = true, items = {} })
-    return
-  end
-
-  local notes = Cache.get(Source._vault)
-
-  -- Column positions for the textEdit range (0-indexed).
-  -- We replace the search text AND any ]] already in the buffer (e.g. from autopairs).
-  local col        = ctx.cursor[2]
-  local start_char = col - #search
-  local row_0      = ctx.cursor[1] - 1
-  local after      = ctx.line and ctx.line:sub(col + 1) or ''  -- text after cursor
-  local end_col    = col + (after:match('^%]%]') and 2 or 0)  -- consume ]] if present
-
-  local items = {}
-  local q = search:lower()
-
-  for _, note in ipairs(notes) do
-    local seen = {}
-    local candidates = { note.id, note.stem }
-    for _, a in ipairs(note.aliases) do candidates[#candidates + 1] = a end
-    for _, label in ipairs(candidates) do
-      if label and label ~= '' and not seen[label] and label:lower():find(q, 1, true) then
-        seen[label] = true
-        local target = note.id or note.stem
-        items[#items + 1] = {
-          label    = label,
-          kind     = 12, -- Value
-          textEdit = {
-            newText = target .. ((label ~= target) and ('|' .. label) or '') .. ']]',
-            range   = {
-              start   = { line = row_0, character = start_char },
-              ['end'] = { line = row_0, character = end_col },
-            },
-          },
-        }
-      end
-    end
-  end
-
-  -- "Create: <search>" item — ID generated now so textEdit already has final form.
-  -- Memoize per search string so rapid keystrokes don't burn a new ID each time.
-  if search ~= '' then
-    if self._last_create_search ~= search then
-      self._last_create_search = search
-      self._last_create_id     = generate_id()
-    end
-    local new_id = self._last_create_id
-    items[#items + 1] = {
-      label         = 'Create: ' .. search,
-      kind          = 12,
-      _create_title = search,
-      _create_id    = new_id,
-      textEdit      = {
-        newText = new_id .. '|' .. search .. ']]',
-        range   = {
-          start   = { line = row_0, character = start_char },
-          ['end'] = { line = row_0, character = end_col },
-        },
-      },
-    }
-  end
-
-  resolve({ is_incomplete_forward = true, is_incomplete_backward = true, items = items })
-end
-
--- Called by blink when the user confirms a completion item
-function Source:execute(ctx, item)
-  if not item._create_title then return end
-  local title = item._create_title
-  local id    = item._create_id
-  local buf   = vim.api.nvim_get_current_buf()
-  local row   = vim.api.nvim_win_get_cursor(0)[1] - 1  -- capture now, before async
-  local ns    = vim.api.nvim_create_namespace('obsidian_cli_completion')
-  local mark  = vim.api.nvim_buf_set_extmark(buf, ns, row, 0, {})
-  local cli   = require('obsidian-cli')
-  cli._run_async({ 'create', 'name=' .. title }, function(lines)
-    if not lines then return end
-    local path      = cli._resolve_note_path(title)
-    local actual_id = cli._write_frontmatter(path, title, id)
-    if not actual_id then return end
-    if actual_id ~= id then
-      vim.schedule(function()
-        local pos         = vim.api.nvim_buf_get_extmark_by_id(buf, ns, mark, {})
-        local current_row = pos[1]
-        vim.api.nvim_buf_del_extmark(buf, ns, mark)
-        local line     = vim.api.nvim_buf_get_lines(buf, current_row, current_row + 1, false)[1]
-        local old_link = '[[' .. id .. '|' .. title .. ']]'
-        local new_link = '[[' .. actual_id .. '|' .. title .. ']]'
-        local patched  = line:gsub(vim.pesc(old_link), function() return new_link end, 1)
-        if patched ~= line then
-          vim.api.nvim_buf_set_lines(buf, current_row, current_row + 1, false, { patched })
+      for _, note in ipairs(notes) do
+        local seen = {}
+        local candidates = { note.id, note.stem }
+        for _, a in ipairs(note.aliases) do candidates[#candidates + 1] = a end
+        for _, label in ipairs(candidates) do
+          if label and label ~= '' and not seen[label] and label:lower():find(q, 1, true) then
+            seen[label] = true
+            local target = note.id or note.stem
+            local text = target .. ((label ~= target) and ('|' .. label) or '') .. suffix
+            items[#items + 1] = { word = text, abbr = label, menu = '[Obsidian]' }
+          end
         end
-      end)
-    end
-    Cache.add(actual_id, title, path)
-    vim.schedule(function()
-      vim.notify('[obsidian] created: ' .. title .. '  [' .. actual_id .. ']', vim.log.levels.DEBUG)
-    end)
-  end)
+      end
+
+      -- "New note: <search>" as the last item
+      if search ~= '' then
+        if last_create_search ~= search then
+          last_create_search = search
+          last_create_id = generate_id()
+        end
+        local text = last_create_id .. '|' .. search .. suffix
+        items[#items + 1] = { word = text, abbr = 'New note: ' .. search, menu = '[Create]', user_data = { create_title = search, create_id = last_create_id } }
+      end
+
+      if #items > 0 then
+        local saved = vim.o.completeopt
+        vim.o.completeopt = 'menuone,noinsert,noselect'
+        local start_col = col - #search
+        vim.fn.complete(start_col, items)
+        vim.o.completeopt = saved
+      end
+    end,
+  })
+
+  -- Handle note creation when the "New note" item is accepted
+  vim.api.nvim_create_autocmd('CompleteDone', {
+    group = vim.api.nvim_create_augroup('obsidian-wikilink-create', { clear = true }),
+    pattern = '*.md',
+    callback = function()
+      local completed = vim.v.completed_item
+      if not completed or not completed.user_data then return end
+
+      local data = completed.user_data
+      -- user_data arrives as a JSON string from vim.fn.complete; decode it
+      if type(data) == 'string' then
+        local ok, parsed = pcall(vim.json.decode, data)
+        if not ok then return end
+        data = parsed
+      end
+
+      if not data.create_title then return end
+
+      local title = data.create_title
+      local id = data.create_id
+      local path = vault_path:gsub('/+$', '') .. '/' .. id .. '.md'
+
+      local content = table.concat({
+        '---',
+        'id: ' .. id,
+        'aliases:',
+        '  - ' .. title,
+        'tags: []',
+        '---',
+        '',
+      }, '\n')
+
+      local f = io.open(path, 'w')
+      if not f then
+        vim.notify('[obsidian] failed to create: ' .. path, vim.log.levels.ERROR)
+        return
+      end
+      f:write(content)
+      f:close()
+
+      require('obsidian-cli.cache').add(id, title, path)
+      vim.notify('[obsidian] created: ' .. title .. '  [' .. id .. ']', vim.log.levels.INFO)
+    end,
+  })
+
+  -- Map <CR> to accept completion (like blink's preset='enter') in markdown buffers.
+  -- When the completion popup is visible, <CR> confirms the selection without inserting a newline.
+  -- When no popup is visible, <CR> behaves normally.
+  vim.api.nvim_create_autocmd('FileType', {
+    group = vim.api.nvim_create_augroup('obsidian-complete-cr', { clear = true }),
+    pattern = 'markdown',
+    callback = function(ev)
+      vim.keymap.set('i', '<CR>', function()
+        return vim.fn.pumvisible() == 1 and '<C-y>' or '<CR>'
+      end, { buffer = ev.buf, expr = true })
+    end,
+  })
 end
 
-return Source
+return M

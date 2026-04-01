@@ -21,9 +21,8 @@ function M.setup(opts)
   config = vim.tbl_deep_extend('force', config, opts or {})
   local vault = norm_vault()
   if vault ~= '' then
-    -- Inject vault path into the completion module so it knows where to scan
-    local ok, comp = pcall(require, 'obsidian-cli.completion')
-    if ok then comp._vault = vault end
+    -- Set up native [[ wikilink completion for markdown files
+    require('obsidian-cli.completion').setup(vault)
     -- Pre-warm the cache at startup so search_notes() and [[ are instant
     vim.schedule(function()
       require('obsidian-cli.cache').refresh(vault)
@@ -394,11 +393,6 @@ function M.snippets()
     prompt_title = 'Obsidian Snippets',
   }
 end
-
--- Internals re-exported for completion.lua (avoids circular dependency issues)
-M._run_async        = run_async
-M._resolve_note_path = resolve_note_path
-M._write_frontmatter = write_frontmatter
 
 -- Force a full cache rebuild (useful if notes were edited outside nvim)
 function M.refresh_cache()
