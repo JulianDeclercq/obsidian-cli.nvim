@@ -29,11 +29,15 @@ function M.setup(opts)
       require('obsidian-cli.cache').refresh(vault)
     end)
     -- Keep aliases in sync: re-parse frontmatter whenever a vault .md is saved
+    local grp = vim.api.nvim_create_augroup('obsidian-cli', { clear = true })
     vim.api.nvim_create_autocmd('BufWritePost', {
+      group    = grp,
       pattern  = '*.md',
       callback = function(ev)
         local path = ev.match:gsub('\\', '/')
-        if path:sub(1, #vault) == vault then
+        local path_lower  = path:lower()
+        local vault_lower = vault:lower()
+        if path_lower:sub(1, #vault_lower) == vault_lower then
           require('obsidian-cli.cache').update_from_file(path)
         end
       end,
@@ -55,11 +59,22 @@ local function write_frontmatter(path, title, id)
     local existing = content:match('\nid:%s*(.-)%s*\n')
     if existing and existing ~= '' then return existing end
     -- No id field — inject one just before the closing ---
-    local new_id  = id or generate_id()
-    local fm_end  = content:find('\n%-%-%-', 4)  -- position of \n before closing ---
-    if fm_end then
-      local eol     = content:find('\r\n') and '\r\n' or '\n'
-      local patched = content:sub(1, fm_end) .. 'id: ' .. new_id .. eol .. content:sub(fm_end + 1)
+    local new_id = id or generate_id()
+    local eol    = content:find('\r\n') and '\r\n' or '\n'
+    local lines  = {}
+    for ln in (content .. '\n'):gmatch('([^\r\n]*)\r?\n') do
+      lines[#lines + 1] = ln
+    end
+    local close_idx = nil
+    for i = 2, #lines do
+      if lines[i]:match('^%-%-%-%s*$') then
+        close_idx = i
+        break
+      end
+    end
+    if close_idx then
+      table.insert(lines, close_idx, 'id: ' .. new_id)
+      local patched = table.concat(lines, eol)
       local out = io.open(path, 'w')
       if not out then return nil end
       out:write(patched); out:close()
@@ -79,7 +94,7 @@ local function write_frontmatter(path, title, id)
   }, '\n')
 
   local out = io.open(path, 'w')
-  if not out then return id end
+  if not out then return nil end
   out:write(fm .. content)
   out:close()
   return id
@@ -91,13 +106,13 @@ local function run(args)
   local argv = { config.bin }
   for _, a in ipairs(args) do table.insert(argv, a) end
   if config.vault then table.insert(argv, 'vault=' .. config.vault) end
-  local output = vim.fn.system(argv)
-  if vim.v.shell_error ~= 0 then
+  local obj = vim.system(argv, { text = true }):wait()
+  if obj.code ~= 0 then
     vim.notify('obsidian-cli: command failed: ' .. table.concat(argv, ' '), vim.log.levels.ERROR)
     return {}
   end
   local lines = {}
-  for line in output:gmatch('[^\r\n]+') do
+  for line in (obj.stdout or ''):gmatch('[^\r\n]+') do
     local trimmed = line:match('^%s*(.-)%s*$')
     if trimmed ~= '' then table.insert(lines, trimmed) end
   end
@@ -129,7 +144,7 @@ local function run_async(args, cb)
 end
 
 -- Resolve a note name to an absolute path by searching recursively in the vault.
--- Falls back to vault_path/name.md if not found.
+-- Returns nil if not found.
 local function resolve_note_path(name)
   local vault = norm_vault()
   local filename = (name:match('[^/\\]+$') or name):gsub('%.md$', '') .. '.md'
@@ -139,13 +154,16 @@ local function resolve_note_path(name)
     if matches and #matches > 0 then
       return matches[1]
     end
-    return vault .. '/' .. filename
   end
-  return filename
+  return nil
 end
 
 local function open_in_nvim(name)
   local path = resolve_note_path(name)
+  if not path then
+    vim.notify('obsidian-cli: note not found: ' .. name, vim.log.levels.WARN)
+    return
+  end
   local escaped = vim.fn.fnameescape(path)
   if config.open_strategy == 'vsplit' then
     vim.cmd('vsplit ' .. escaped)
@@ -166,12 +184,11 @@ end
 -- Build a Telescope entry table from a raw filename/path string.
 -- Adds a `filename` field so native Telescope mappings (<C-t>, <C-v>, etc.) work.
 local function make_entry(raw)
-  local path = resolve_note_path(raw)
   return {
     value = raw,
     display = raw,
     ordinal = raw,
-    filename = path,
+    filename = resolve_note_path(raw),
   }
 end
 
@@ -212,31 +229,58 @@ function M.create_note()
     run_async({ 'create', 'name=' .. title }, function(lines)
       if not lines then return end
       local path = resolve_note_path(title)
+      if not path then
+        vim.notify('obsidian-cli: created note but could not find file for: ' .. title, vim.log.levels.WARN)
+        return
+      end
       local id = write_frontmatter(path, title)
-      -- Append to cache so [[ completion and search show it immediately
       if id then require('obsidian-cli.cache').add(id, title, path) end
       open_in_nvim(title)
     end)
   end)
 end
 
--- Follow [[wikilink]] under cursor, open in nvim
+-- Follow link under cursor: [[wikilink]], [text](path), or [text](https://url)
 function M.follow_link()
   local line = vim.api.nvim_get_current_line()
   local col = vim.api.nvim_win_get_cursor(0)[2] + 1
-  local name = nil
-  for s, content, e in line:gmatch('()%[%[([^%]]+)%]%]()') do
+
+  -- Try wikilink with alias: [[target|label]]
+  for s, content, e in line:gmatch('()%[%[([^][|]+|[^%]]+)%]%]()') do
     if col >= s and col <= e then
-      name = content:match('^([^|#]+)')
-      break
+      local target = content:match('^([^|#]+)')
+      if target and target ~= '' then
+        open_in_nvim(target:match('^%s*(.-)%s*$'))
+        return
+      end
     end
   end
-  if not name or name == '' then
-    vim.notify('obsidian-cli: no wikilink found under cursor', vim.log.levels.WARN)
-    return
+
+  -- Try plain wikilink: [[target]]
+  for s, content, e in line:gmatch('()%[%[([^][|]+)%]%]()') do
+    if col >= s and col <= e then
+      local target = content:match('^([^#]+)')
+      if target and target ~= '' then
+        open_in_nvim(target:match('^%s*(.-)%s*$'))
+        return
+      end
+    end
   end
-  name = name:match('^%s*(.-)%s*$')
-  open_in_nvim(name)
+
+  -- Try markdown link: [text](target)
+  for s, _, target, e in line:gmatch('()%[([^][]+)%]%(([^%)]+)%)()') do
+    if col >= s and col <= e then
+      target = target:match('^%s*(.-)%s*$')
+      if target:match('^https?://') or target:match('^mailto:') or target:match('^file:') then
+        vim.ui.open(target)
+      else
+        open_in_nvim(target)
+      end
+      return
+    end
+  end
+
+  vim.notify('obsidian-cli: no link found under cursor', vim.log.levels.WARN)
 end
 
 -- Search notes by title and aliases using the vault cache

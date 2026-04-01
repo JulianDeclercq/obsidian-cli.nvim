@@ -6,10 +6,13 @@ local _cache = nil
 local function parse_frontmatter(path)
   local f = io.open(path, 'r')
   if not f then return nil end
+  local content = f:read('*a')
+  f:close()
   local result = { id = nil, aliases = {} }
-  local in_fm, in_aliases, n = false, false, 0
-  for line in f:lines() do
-    n = n + 1
+  local lines = {}
+  for ln in (content .. '\n'):gmatch('([^\n]*)\n') do lines[#lines + 1] = ln end
+  local in_fm, in_aliases = false, false
+  for n, line in ipairs(lines) do
     if n == 1 then
       if line:match('^%-%-%-') then in_fm = true else break end
     elseif in_fm then
@@ -18,6 +21,17 @@ local function parse_frontmatter(path)
       if id then result.id = id:match('^%s*(.-)%s*$') end
       if line:match('^aliases:') then
         in_aliases = true
+        -- Inline list syntax: aliases: [foo, bar]
+        local bracket = line:match('^aliases:%s*%[(.-)%]')
+        if bracket then
+          in_aliases = false
+          for item in bracket:gmatch('[^,]+') do
+            local trimmed = item:match('^%s*(.-)%s*$')
+            if trimmed ~= '' then
+              table.insert(result.aliases, trimmed)
+            end
+          end
+        end
       elseif in_aliases then
         local a = line:match('^%s*-%s+(.+)')
         if a then
@@ -29,7 +43,6 @@ local function parse_frontmatter(path)
     end
     if n > 50 then break end
   end
-  f:close()
   return result
 end
 
@@ -69,11 +82,11 @@ function Cache.add(id, title, path)
   -- If cache isn't built yet the lazy build on next access will pick it up anyway
 end
 
--- Remove a note by stem (called on :DeleteFile)
-function Cache.remove(stem)
+-- Remove a note by path (called on :DeleteFile)
+function Cache.remove(path)
   if not _cache then return end
   for i, note in ipairs(_cache) do
-    if note.stem == stem then
+    if note.path == path then
       table.remove(_cache, i)
       return
     end
@@ -90,7 +103,7 @@ function Cache.update_from_file(path)
   local new_id      = info.id or stem
   local new_aliases = info.aliases or {}
   for _, note in ipairs(_cache) do
-    if note.stem == stem then
+    if note.path == path then
       if note.id ~= new_id or not vim.deep_equal(note.aliases, new_aliases) then
         note.id      = new_id
         note.aliases = new_aliases

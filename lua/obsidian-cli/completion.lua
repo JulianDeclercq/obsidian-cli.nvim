@@ -111,6 +111,8 @@ function Source:execute(ctx, item)
   local id    = item._create_id
   local buf   = vim.api.nvim_get_current_buf()
   local row   = vim.api.nvim_win_get_cursor(0)[1] - 1  -- capture now, before async
+  local ns    = vim.api.nvim_create_namespace('obsidian_cli_completion')
+  local mark  = vim.api.nvim_buf_set_extmark(buf, ns, row, 0, {})
   local cli   = require('obsidian-cli')
   cli._run_async({ 'create', 'name=' .. title }, function(lines)
     if not lines then return end
@@ -119,11 +121,15 @@ function Source:execute(ctx, item)
     if not actual_id then return end
     if actual_id ~= id then
       vim.schedule(function()
-        local line    = vim.api.nvim_buf_get_lines(buf, row, row + 1, false)[1]
-        local repl    = ('[[' .. actual_id .. '|' .. title .. ']]'):gsub('%%', '%%%%')
-        local patched = line:gsub(vim.pesc('[[' .. id .. '|' .. title .. ']]'), repl, 1)
+        local pos         = vim.api.nvim_buf_get_extmark_by_id(buf, ns, mark, {})
+        local current_row = pos[1]
+        vim.api.nvim_buf_del_extmark(buf, ns, mark)
+        local line     = vim.api.nvim_buf_get_lines(buf, current_row, current_row + 1, false)[1]
+        local old_link = '[[' .. id .. '|' .. title .. ']]'
+        local new_link = '[[' .. actual_id .. '|' .. title .. ']]'
+        local patched  = line:gsub(vim.pesc(old_link), function() return new_link end, 1)
         if patched ~= line then
-          vim.api.nvim_buf_set_lines(buf, row, row + 1, false, { patched })
+          vim.api.nvim_buf_set_lines(buf, current_row, current_row + 1, false, { patched })
         end
       end)
     end
