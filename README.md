@@ -6,7 +6,32 @@ Requires **Neovim 0.12+** and the [obsidian CLI](https://obsidian.md/help/cli) b
 
 ## Setup
 
-With [lazy.nvim](https://github.com/folke/lazy.nvim):
+### With native `vim.pack` (Neovim 0.12+)
+
+Add the plugin to your `vim.pack.add` call:
+
+```lua
+vim.pack.add {
+  'https://github.com/JulianDeclercq/obsidian-cli.nvim',
+  -- ... your other plugins
+}
+```
+
+Then call setup:
+
+```lua
+require('obsidian-cli').setup {
+  vault = 'My Vault',                    -- vault name passed to obsidian CLI
+  vault_path = '/path/to/your/vault',    -- absolute path to the vault directory
+  open_strategy = 'current',             -- 'current' | 'vsplit' | 'hsplit'
+  daily_notes = {
+    folder = nil,                        -- subdirectory within vault, e.g. 'Daily'
+    date_format = '%Y-%m-%d',
+  },
+}
+```
+
+### With [lazy.nvim](https://github.com/folke/lazy.nvim)
 
 ```lua
 {
@@ -20,16 +45,6 @@ With [lazy.nvim](https://github.com/folke/lazy.nvim):
       folder = nil,                        -- subdirectory within vault, e.g. 'Daily'
       date_format = '%Y-%m-%d',
     },
-  },
-  keys = {
-    { '<leader>on',  function() require('obsidian-cli').create_note()  end, desc = 'Obsidian: New Note' },
-    { '<leader>ol',  function() require('obsidian-cli').follow_link()  end, desc = 'Obsidian: Follow Link' },
-    { '<leader>of',  function() require('obsidian-cli').search_notes() end, desc = 'Obsidian: Search' },
-    { '<leader>og',  function() require('obsidian-cli').grep_notes()   end, desc = 'Obsidian: Grep' },
-    { '<leader>oo',  function() require('obsidian-cli').open_note()    end, desc = 'Obsidian: Open in App' },
-    { '<leader>ob',  function() require('obsidian-cli').backlinks()    end, desc = 'Obsidian: Backlinks' },
-    { '<leader>ot',  function() require('obsidian-cli').today()        end, desc = 'Obsidian: Today' },
-    { '<leader>os',  function() require('obsidian-cli').snippets()     end, desc = 'Obsidian: Snippets' },
   },
 }
 ```
