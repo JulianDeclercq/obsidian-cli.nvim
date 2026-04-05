@@ -271,7 +271,13 @@ function M.follow_link()
     if col >= s and col <= e then
       target = target:match('^%s*(.-)%s*$')
       if target:match('^https?://') or target:match('^mailto:') or target:match('^file:') then
-        vim.ui.open(target)
+        -- vim.ui.open on Windows uses cmd.exe which eats '&' in URLs.
+        -- Use rundll32 with explicit quoting to preserve query params.
+        if vim.fn.has('win32') == 1 then
+          vim.fn.jobstart('rundll32 url.dll,FileProtocolHandler "' .. target .. '"')
+        else
+          vim.ui.open(target)
+        end
       else
         open_in_nvim(target)
       end
