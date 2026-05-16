@@ -17,8 +17,19 @@ local function norm_vault()
   return (config.vault_path or ''):gsub('\\', '/'):gsub('/+$', '')
 end
 
+local function cli_available()
+  return vim.fn.executable(config.bin) == 1
+end
+
 function M.setup(opts)
   config = vim.tbl_deep_extend('force', config, opts or {})
+  if not cli_available() then
+    vim.notify(
+      "obsidian-cli: '" .. config.bin .. "' not found on PATH — create_note/open_note/backlinks will be unavailable. "
+        .. 'Install it from https://obsidian.md/help/cli or set `bin` in setup().',
+      vim.log.levels.WARN
+    )
+  end
   local vault = norm_vault()
   if vault ~= '' then
     -- Set up native [[ wikilink completion for markdown files
@@ -102,6 +113,10 @@ end
 -- Run a CLI command synchronously. args is a list of extra arguments.
 -- vault=<name> is appended automatically if configured.
 local function run(args)
+  if not cli_available() then
+    vim.notify("obsidian-cli: '" .. config.bin .. "' not found on PATH", vim.log.levels.ERROR)
+    return {}
+  end
   local argv = { config.bin }
   for _, a in ipairs(args) do table.insert(argv, a) end
   if config.vault then table.insert(argv, 'vault=' .. config.vault) end
@@ -122,6 +137,11 @@ end
 -- vault=<name> is appended automatically if configured.
 -- Calls cb(lines) on success, cb(nil) on error.
 local function run_async(args, cb)
+  if not cli_available() then
+    vim.notify("obsidian-cli: '" .. config.bin .. "' not found on PATH", vim.log.levels.ERROR)
+    cb(nil)
+    return
+  end
   local argv = { config.bin }
   for _, a in ipairs(args) do table.insert(argv, a) end
   if config.vault then table.insert(argv, 'vault=' .. config.vault) end
