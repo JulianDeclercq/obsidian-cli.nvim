@@ -110,6 +110,20 @@ local function write_frontmatter(path, title, id)
   return id
 end
 
+-- Format a CLI failure into a user-facing message. Detects the common case
+-- where Obsidian isn't running and surfaces stderr for everything else.
+local function format_cli_error(argv, obj)
+  local stderr = (obj.stderr or ''):match('^%s*(.-)%s*$')
+  local stdout = (obj.stdout or ''):match('^%s*(.-)%s*$')
+  local detail = stderr ~= '' and stderr or stdout
+  if detail:find('unable to find Obsidian', 1, true) then
+    return 'obsidian-cli: Obsidian is not running — open the Obsidian app and try again'
+  end
+  local msg = 'obsidian-cli: command failed: ' .. table.concat(argv, ' ')
+  if detail ~= '' then msg = msg .. '\n' .. detail end
+  return msg
+end
+
 -- Run a CLI command synchronously. args is a list of extra arguments.
 -- vault=<name> is appended automatically if configured.
 local function run(args)
@@ -122,7 +136,7 @@ local function run(args)
   if config.vault then table.insert(argv, 'vault=' .. config.vault) end
   local obj = vim.system(argv, { text = true }):wait()
   if obj.code ~= 0 then
-    vim.notify('obsidian-cli: command failed: ' .. table.concat(argv, ' '), vim.log.levels.ERROR)
+    vim.notify(format_cli_error(argv, obj), vim.log.levels.ERROR)
     return {}
   end
   local lines = {}
@@ -148,7 +162,7 @@ local function run_async(args, cb)
   vim.system(argv, { text = true }, function(obj)
     if obj.code ~= 0 then
       vim.schedule(function()
-        vim.notify('obsidian-cli: command failed: ' .. table.concat(argv, ' '), vim.log.levels.ERROR)
+        vim.notify(format_cli_error(argv, obj), vim.log.levels.ERROR)
         cb(nil)
       end)
       return
