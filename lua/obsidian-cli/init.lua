@@ -55,61 +55,6 @@ function M.setup(opts)
   end
 end
 
-local generate_id = util.generate_id
-
--- Returns the id that was written (or already present), nil on failure.
-local function write_frontmatter(path, title, id)
-  local f = io.open(path, 'r')
-  if not f then return nil end
-  local content = f:read('*a')
-  f:close()
-
-  if content:match('^%-%-%-') then
-    -- Already has frontmatter — extract existing id if present.
-    local existing = content:match('\nid:%s*(.-)%s*\n')
-    if existing and existing ~= '' then return existing end
-    -- No id field — inject one just before the closing ---
-    local new_id = id or generate_id()
-    local eol    = content:find('\r\n') and '\r\n' or '\n'
-    local lines  = {}
-    for ln in (content .. '\n'):gmatch('([^\r\n]*)\r?\n') do
-      lines[#lines + 1] = ln
-    end
-    local close_idx = nil
-    for i = 2, #lines do
-      if lines[i]:match('^%-%-%-%s*$') then
-        close_idx = i
-        break
-      end
-    end
-    if close_idx then
-      table.insert(lines, close_idx, 'id: ' .. new_id)
-      local patched = table.concat(lines, eol)
-      local out = io.open(path, 'w')
-      if not out then return nil end
-      out:write(patched); out:close()
-    end
-    return new_id
-  end
-
-  id = id or generate_id()
-  local fm = table.concat({
-    '---',
-    'id: ' .. id,
-    'aliases:',
-    '  - ' .. title,
-    'tags: []',
-    '---',
-    '',
-  }, '\n')
-
-  local out = io.open(path, 'w')
-  if not out then return nil end
-  out:write(fm .. content)
-  out:close()
-  return id
-end
-
 -- Format a CLI failure into a user-facing message. Detects the common case
 -- where Obsidian isn't running and surfaces stderr for everything else.
 local function format_cli_error(argv, obj)
@@ -191,12 +136,7 @@ local function resolve_note_path(name)
   return nil
 end
 
-local function open_in_nvim(name)
-  local path = resolve_note_path(name)
-  if not path then
-    vim.notify('obsidian-cli: note not found: ' .. name, vim.log.levels.WARN)
-    return
-  end
+local function open_path(path)
   local escaped = vim.fn.fnameescape(path)
   if config.open_strategy == 'vsplit' then
     vim.cmd('vsplit ' .. escaped)
@@ -205,6 +145,15 @@ local function open_in_nvim(name)
   else
     vim.cmd('edit ' .. escaped)
   end
+end
+
+local function open_in_nvim(name)
+  local path = resolve_note_path(name)
+  if not path then
+    vim.notify('obsidian-cli: note not found: ' .. name, vim.log.levels.WARN)
+    return
+  end
+  open_path(path)
 end
 
 -- Returns the note stem (filename without extension) for use as a file= CLI arg.
@@ -255,21 +204,24 @@ local function telescope_pick(results, prompt_title, on_select)
   }):find()
 end
 
--- Create a new note and open it in nvim
+-- Create a new note (<id>.md at the vault root) and open it in nvim.
+-- Pure Lua — no external CLI, works without the Obsidian app running. Shares
+-- util.create_note_file with the wikilink completion "New note" flow.
 function M.create_note()
+  local vault = norm_vault()
+  if vault == '' then
+    vim.notify('obsidian-cli: vault_path not configured', vim.log.levels.WARN)
+    return
+  end
   vim.ui.input({ prompt = 'Note title: ' }, function(title)
     if not title or title == '' then return end
-    run_async({ 'create', 'name=' .. title }, function(lines)
-      if not lines then return end
-      local path = resolve_note_path(title)
-      if not path then
-        vim.notify('obsidian-cli: created note but could not find file for: ' .. title, vim.log.levels.WARN)
-        return
-      end
-      local id = write_frontmatter(path, title)
-      if id then require('obsidian-cli.cache').add(id, title, path) end
-      open_in_nvim(title)
-    end)
+    local path, id = util.create_note_file(vault, title)
+    if not path then
+      vim.notify('obsidian-cli: ' .. id, vim.log.levels.ERROR)
+      return
+    end
+    require('obsidian-cli.cache').add(id, title, path)
+    open_path(path)
   end)
 end
 

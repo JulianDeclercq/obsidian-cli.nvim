@@ -78,26 +78,11 @@ function M.setup(vault_path)
       if not data.create_title then return end
 
       local title = data.create_title
-      local id = data.create_id
-      local path = vault_path:gsub('/+$', '') .. '/' .. id .. '.md'
-
-      local content = table.concat({
-        '---',
-        'id: ' .. id,
-        'aliases:',
-        '  - ' .. title,
-        'tags: []',
-        '---',
-        '',
-      }, '\n')
-
-      local f = io.open(path, 'w')
-      if not f then
-        vim.notify('[obsidian] failed to create: ' .. path, vim.log.levels.ERROR)
+      local path, id = require('obsidian-cli.util').create_note_file(vault_path, title, data.create_id)
+      if not path then
+        vim.notify('[obsidian] ' .. id, vim.log.levels.ERROR)
         return
       end
-      f:write(content)
-      f:close()
 
       require('obsidian-cli.cache').add(id, title, path)
       vim.notify('[obsidian] created: ' .. title .. '  [' .. id .. ']', vim.log.levels.INFO)
