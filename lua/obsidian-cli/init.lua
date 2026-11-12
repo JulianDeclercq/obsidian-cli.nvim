@@ -34,9 +34,11 @@ function M.setup(opts)
   if vault ~= '' then
     -- Set up native [[ wikilink completion for markdown files
     require('obsidian-cli.completion').setup(vault)
-    -- Pre-warm the cache at startup so search_notes() and [[ are instant
+    -- Pre-warm the cache at startup so search_notes() and [[ are instant.
+    -- Runs on a worker thread: a synchronous scan of a few thousand notes
+    -- froze startup (seconds on a cold disk cache).
     vim.schedule(function()
-      require('obsidian-cli.cache').refresh(vault)
+      require('obsidian-cli.cache').refresh_async(vault)
     end)
     -- Keep aliases in sync: re-parse frontmatter whenever a vault .md is saved
     local grp = vim.api.nvim_create_augroup('obsidian-cli', { clear = true })
